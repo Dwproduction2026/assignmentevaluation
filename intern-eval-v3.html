@@ -585,7 +585,12 @@ let REVIEWERS = {
 };
 let CANDIDATES = [];
 let GROUPS = {};
-let SHEETS_CONFIG = { url:'', scriptUrl:'', sheetName:'인원목록', connected:false };
+let SHEETS_CONFIG = {
+  url: 'https://docs.google.com/spreadsheets/d/1MJoCsN8HfgoENfocgXyIlSGJdMZtdoytZwq2VVcYWKE/edit?usp=sharing',
+  scriptUrl: 'https://script.google.com/macros/s/AKfycbxuSXbUvxY3JUak27xgsFCAMnj1VTwNqqGPQhKODK-9U3dHzLECkNFiikCjqn3FAk_1WQ/exec',
+  sheetName: '인원목록',
+  connected: true,
+};
 
 /* ═══════════════════════════════════════
    STATE
@@ -602,34 +607,36 @@ let candMgrTab = 'list', candEditId = null, rvMgrTab = 'list', rvEditId = null;
 /* ═══════════════════════════════════════
    LOCALSTORAGE
 ═══════════════════════════════════════ */
-const LS_KEY      = 'offline_eval_data_v3';
-const LS_GROUPS   = 'offline_eval_groups_v3';
-const LS_SHEETS   = 'offline_eval_sheets_v3';
-const LS_CANDS    = 'offline_eval_cands_v3';
-const LS_REVIEWERS= 'offline_eval_rv_v3';
-const LS_HISTORY  = 'offline_eval_history_v3';
+const LS_KEY      = 'intern_eval_data_v4';
+const LS_SHEETS   = 'intern_eval_sheets_v4';
+const LS_HISTORY  = 'intern_eval_history_v4';
 
 function saveToLS() {
   try {
-    localStorage.setItem(LS_KEY,      JSON.stringify(evalData));
-    localStorage.setItem(LS_GROUPS,   JSON.stringify(GROUPS));
-    localStorage.setItem(LS_SHEETS,   JSON.stringify(SHEETS_CONFIG));
-    localStorage.setItem(LS_CANDS,    JSON.stringify(CANDIDATES));
-    localStorage.setItem(LS_REVIEWERS,JSON.stringify(REVIEWERS));
-    localStorage.setItem(LS_HISTORY,  JSON.stringify(evalHistory));
+    localStorage.setItem(LS_KEY,    JSON.stringify(evalData));
+    localStorage.setItem(LS_HISTORY,JSON.stringify(evalHistory));
+    localStorage.setItem(LS_SHEETS, JSON.stringify({
+      scriptUrl: SHEETS_CONFIG.scriptUrl,
+      url: SHEETS_CONFIG.url,
+    }));
   } catch(e){}
 }
 function loadFromLS() {
   try {
-    const d=localStorage.getItem(LS_KEY);      if(d) evalData=JSON.parse(d);
-    const g=localStorage.getItem(LS_GROUPS);   if(g) GROUPS=JSON.parse(g);
-    const s=localStorage.getItem(LS_SHEETS);   if(s) SHEETS_CONFIG=JSON.parse(s);
-    const ca=localStorage.getItem(LS_CANDS);   if(ca){const p=JSON.parse(ca);if(p.length)CANDIDATES.splice(0,CANDIDATES.length,...p);}
-    const rv=localStorage.getItem(LS_REVIEWERS);if(rv){const p=JSON.parse(rv);if(Object.keys(p).length)Object.assign(REVIEWERS,p);}
-    const hi=localStorage.getItem(LS_HISTORY); if(hi) evalHistory=JSON.parse(hi);
+    const d=localStorage.getItem(LS_KEY);    if(d) evalData=JSON.parse(d);
+    const hi=localStorage.getItem(LS_HISTORY);if(hi) evalHistory=JSON.parse(hi);
+    const s=localStorage.getItem(LS_SHEETS); if(s){
+      const p=JSON.parse(s);
+      if(p.scriptUrl) SHEETS_CONFIG.scriptUrl=p.scriptUrl;
+      if(p.url) SHEETS_CONFIG.url=p.url;
+    }
   } catch(e){}
 }
 loadFromLS();
+// 이전 버전 캐시 제거 (GROUPS/CANDS/REVIEWERS는 항상 시트에서 불러옴)
+try {
+  ['offline_eval_groups_v3','offline_eval_cands_v3','offline_eval_rv_v3'].forEach(k=>localStorage.removeItem(k));
+} catch(e){}
 
 /* ═══════════════════════════════════════
    HELPERS
@@ -669,66 +676,86 @@ async function syncAll(silent) {
   if (!SHEETS_CONFIG.scriptUrl) return false;
   try {
     const [candRows, rvRows] = await Promise.all([fetchSheet('인원목록'), fetchSheet('평가자목록')]);
+
+    // 인원목록: A사번 B이름 C1차OJT D2차OJT E과제명 F그룹 G활성화(Y/N) H평가구분
+    // UID = 사번 + ':' + 평가구분 (고유키) — 중복 사번 Y 우선 처리
     if (candRows.length) {
-      const seen = {};
+      const uidMap = {};
       candRows.forEach(row => {
-        const id = String(row[0]||'').trim(); if (!id) return;
-        const active = String(row[5]||'').trim().toUpperCase() === 'Y';
-        if (!active) return;
-        if (seen[id]) return;
-        seen[id] = true;
-        const existing = CANDIDATES.findIndex(c=>c.id===id);
-        const cand = { id, name:String(row[1]||'').trim(), ojt1:String(row[2]||'').trim(), ojt2:String(row[3]||'').trim(), project:String(row[4]||'').trim(), group:String(row[6]||'').trim() };
-        if (existing >= 0) CANDIDATES[existing] = {...CANDIDATES[existing], ...cand};
-        else if (cand.name) CANDIDATES.push(cand);
+        const id       = String(row[0]||'').trim(); if (!id) return;
+        const evalType = String(row[7]||'').trim(); // H열 평가구분
+        const uid      = id + ':' + evalType;
+        const active   = String(row[6]||'').trim().toUpperCase() === 'Y';
+        if (uidMap[uid]) {
+          if (active) uidMap[uid].active = true;
+          return;
+        }
+        uidMap[uid] = { uid, id, name:String(row[1]||'').trim(), ojt1:String(row[2]||'').trim(),
+          ojt2:String(row[3]||'').trim(), project:String(row[4]||'').trim(),
+          group:String(row[5]||'').trim(), active, evalType };
       });
+      CANDIDATES.splice(0, CANDIDATES.length, ...Object.values(uidMap).filter(c => c.name && c.active));
     }
+
+    // 평가자목록: A사번 B이름 C부서 D비밀번호 E그룹 F활성화(Y/N)
     if (rvRows.length) {
-      const newRv = {};
+      Object.keys(REVIEWERS).forEach(k => delete REVIEWERS[k]);
       rvRows.forEach(row => {
         const id = String(row[0]||'').trim(); if (!id) return;
-        const active = String(row[5]||'').trim().toUpperCase();
-        if (active !== 'Y') return;
-        newRv[id] = { name:String(row[1]||'').trim(), dept:String(row[2]||'').trim(), pw:String(row[3]||'').trim()||id, group:String(row[4]||'').trim(), active:true };
+        if (String(row[5]||'').trim().toUpperCase() !== 'Y') return;
+        REVIEWERS[id] = { name:String(row[1]||'').trim(), dept:String(row[2]||'').trim(),
+          pw:String(row[3]||'').trim()||id, group:String(row[4]||'').trim(), active:true };
       });
-      if (Object.keys(newRv).length) Object.assign(REVIEWERS, newRv);
     }
+
+    // GROUPS 재구성
+    Object.keys(GROUPS).forEach(k => delete GROUPS[k]);
+    const groupNames = [...new Set(CANDIDATES.filter(c=>c.active&&c.group).map(c=>c.group.trim()))];
+    groupNames.forEach(gName => {
+      const gid = 'g_' + gName;
+      GROUPS[gid] = {
+        name: gName, active: true,
+        reviewers: Object.entries(REVIEWERS).filter(([,rv])=>rv.group&&rv.group.trim()===gName).map(([id])=>id),
+        candidates: CANDIDATES.filter(c=>c.active&&c.group&&c.group.trim()===gName).map(c=>c.uid),
+      };
+    });
+
     saveToLS();
     if (!silent) showToast('✅ 데이터 동기화 완료');
     return true;
   } catch(e) { if (!silent) showToast('⚠ 동기화 실패'); return false; }
 }
 
-// 로그인 후 본인 평가 데이터 시트에서 복원
+// 로그인 후 본인 평가 데이터 시트에서 복원 (임시저장 + 평가결과)
 async function loadMyEvalFromSheet(rvId) {
   if (!SHEETS_CONFIG.scriptUrl) return;
   const SCORE_KEYS = CRITERIA.map(c=>c.key);
   function parseRow(row) {
-    const candId = String(row[3]||'').trim(); if (!candId) return null;
-    const isFinal = String(row[row.length-1]||'').trim() === '최종제출';
+    const candUid = String(row[3]||'').trim(); if (!candUid) return null;
+    const isFinal = String(row[row.length-2]||'').trim() === '최종제출';
     const scores = {};
     SCORE_KEYS.forEach((key,i) => { scores[key] = Number(row[9+i]||0); });
-    return { candId, isFinal, data: {
-      scores, good:String(row[9+SCORE_KEYS.length]||''),
-      improve:String(row[10+SCORE_KEYS.length]||''),
-      attendance:String(row[11+SCORE_KEYS.length]||''),
-      submittedAt:String(row[12+SCORE_KEYS.length]||''),
-      submitted:isFinal, finalSubmitted:isFinal,
+    const base = 9 + SCORE_KEYS.length;
+    return { candUid, isFinal, data: {
+      scores, good:String(row[base]||''), improve:String(row[base+1]||''),
+      attendance:String(row[base+2]||''), submittedAt:String(row[base+3]||''),
+      submitted:isFinal, finalSubmitted:isFinal, drafted:!isFinal,
     }};
   }
   try {
-    const [draftRows, finalRows] = await Promise.all([fetchSheet('임시저장'), fetchSheet('평가결과')]);
+    // 평가결과 = 임시저장, 최종제출결과 = 최종제출
+    const [draftRows, finalRows] = await Promise.all([fetchSheet('평가결과'), fetchSheet('최종제출결과')]);
     draftRows.forEach(row => {
       if (String(row[0]||'').trim() !== String(rvId).trim()) return;
       const p = parseRow(row); if (!p) return;
-      const k = getEvalKey(rvId, p.candId);
+      const k = getEvalKey(rvId, p.candUid);
       if (evalData[k]?.finalSubmitted) return;
       evalData[k] = {...p.data, drafted:true};
     });
     finalRows.forEach(row => {
       if (String(row[0]||'').trim() !== String(rvId).trim()) return;
       const p = parseRow(row); if (!p) return;
-      const k = getEvalKey(rvId, p.candId);
+      const k = getEvalKey(rvId, p.candUid);
       if (p.isFinal) evalData[k] = p.data;
       else if (!evalData[k]?.finalSubmitted) evalData[k] = p.data;
     });
@@ -740,21 +767,27 @@ async function pushToSheets(cand, ev, isFinal) {
   if (!SHEETS_CONFIG.scriptUrl) return;
   const total = calcTotal(ev);
   const grade = getGrade(total);
-  const scoreArr = CRITERIA.map(cr => ev.scores[cr.key]||0);
-  const row = {
-    rv_id: currentUser.id, rv_name: currentUser.name, rv_dept: currentUser.dept||'',
-    cand_id: cand.id, cand_name: cand.name, cand_ojt1: cand.ojt1||'', cand_ojt2: cand.ojt2||'',
-    cand_project: cand.project||'', cand_group: cand.group||'',
-    scores: scoreArr, total, grade,
-    good: ev.good||'', improve: ev.improve||'',
-    attendance: ev.attendance||'',
-    submitted_at: ev.submittedAt||new Date().toISOString(),
-    status: isFinal ? '최종제출' : '임시저장',
-  };
+  const status = isFinal ? '최종제출' : '임시저장';
+  const submittedAt = isFinal ? (ev.submittedAt||new Date().toISOString()) : '';
+  const sheetName = isFinal ? '최종제출결과' : '평가결과'; // 시트 분리
+  const row = [
+    currentUser.id, currentUser.name, currentUser.dept||'',
+    cand.uid,        // D열 = UID (upsert 키)
+    cand.name, cand.ojt1||'', cand.ojt2||'', cand.project||'', cand.evalType||'',
+    ...CRITERIA.map(cr => ev.scores[cr.key]||0),
+    total, grade,
+    ev.good||'', ev.improve||'',
+    ev.attendance||'',
+    submittedAt,
+    status,
+    cand.id,         // 실제 사번 (참고용)
+  ];
   try {
-    await fetch(SHEETS_CONFIG.scriptUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(row), mode:'no-cors' });
-    showToast(isFinal ? '📊 최종제출 Sheets 반영 완료' : '💾 임시저장 Sheets 반영 완료');
-  } catch(e) { showToast('⚠ Sheets 연결 실패 (로컬 저장됨)'); }
+    await fetch(SHEETS_CONFIG.scriptUrl, {
+      method:'POST', headers:{'Content-Type':'text/plain'},
+      body: JSON.stringify({ type:'eval_upsert', sheet: sheetName, rvId:currentUser.id, candId:cand.uid, row })
+    });
+  } catch(e) { console.warn('Sheets push 실패:', e); }
 }
 
 window.addEventListener('load', async () => {
@@ -803,7 +836,7 @@ function loginReviewer() {
 function loginAdmin() {
   const id = document.getElementById('ad-id').value.trim();
   const pw = document.getElementById('ad-pw').value;
-  if (id==='admin' && pw==='admin') { currentRole='admin'; adminGo('dashboard'); go('adminScreen'); }
+  if (id==='intern321' && pw==='intern321') { currentRole='admin'; adminGo('dashboard'); go('adminScreen'); }
   else { document.getElementById('login-err').style.display='block'; }
 }
 function logout() { currentUser=null; currentRole=null; selectedCandId=null; go('login'); }
@@ -813,11 +846,10 @@ function logout() { currentUser=null; currentRole=null; selectedCandId=null; go(
 ═══════════════════════════════════════ */
 function getMyCandidates() {
   if (!currentUser) return [];
-  const myIds = new Set();
-  Object.values(GROUPS).forEach(g => {
-    if (g.active !== false && g.reviewers.includes(currentUser.id)) g.candidates.forEach(cid => myIds.add(cid));
-  });
-  return CANDIDATES.filter(c => myIds.has(c.id));
+  const myGroup = (REVIEWERS[currentUser.id]||{}).group||'';
+  let cands = CANDIDATES.filter(c => c.active !== false);
+  if (myGroup) cands = cands.filter(c => c.group && c.group.trim() === myGroup.trim());
+  return cands;
 }
 
 function myCandidates() { filteredCands = getMyCandidates(); renderCandList(); updateRvProgress(); }
@@ -834,14 +866,14 @@ function renderCandList() {
     updateSidebarFinalBtn(); return;
   }
   el.innerHTML = filteredCands.map(c => {
-    const ev = getEval(currentUser.id, c.id);
+    const ev = getEval(currentUser.id, c.uid);
     const total = calcTotal(ev);
     const hasScore = ev.drafted || ev.finalSubmitted;
     const grade = hasScore ? getGrade(total) : null;
-    const on = selectedCandId === c.id;
+    const on = selectedCandId === c.uid;
     const statusClass = ev.finalSubmitted ? 'badge-done' : ev.drafted ? 'badge-draft' : 'badge-todo';
-    const statusLabel = ev.finalSubmitted ? '✓ 최종제출' : ev.drafted ? '💾 임시저장' : '미완료';
-    return `<div class="cand-item${on?' active':''}" onclick="selectCand('${c.id}')">
+    const statusLabel = ev.finalSubmitted ? '✓ 완료(최종제출)' : ev.drafted ? '💾 완료(임시저장)' : '미완료';
+    return `<div class="cand-item${on?' active':''}" onclick="selectCand('${c.uid}')">
       <div class="cand-item-name">${c.name}</div>
       <div class="cand-item-sub">${c.ojt1||''}${c.ojt2?' → '+c.ojt2:''}</div>
       <div class="cand-item-badges">
@@ -855,14 +887,14 @@ function renderCandList() {
 
 function updateRvProgress() {
   if (!currentUser) return;
-  const done = filteredCands.filter(c => evalData[getEvalKey(currentUser.id,c.id)]?.finalSubmitted).length;
+  const done = filteredCands.filter(c => evalData[getEvalKey(currentUser.id,c.uid)]?.finalSubmitted).length;
   document.getElementById('rv-prog-txt').textContent = done + ' / ' + filteredCands.length + ' 완료';
 }
 
 function updateSidebarFinalBtn() {
   const btn = document.getElementById('sidebar-final-btn');
   if (!btn || !currentUser) return;
-  const myIds = filteredCands.map(c=>c.id);
+  const myIds = filteredCands.map(c=>c.uid);
   const pending = myIds.filter(id => { const ev=evalData[getEvalKey(currentUser.id,id)]; return ev?.drafted && !ev?.finalSubmitted; });
   const allDone = myIds.every(id => evalData[getEvalKey(currentUser.id,id)]?.finalSubmitted);
   btn.onclick = confirmFinalSubmitAll;
@@ -905,7 +937,7 @@ function resetMain() {
 function renderRvDashboard() {
   document.getElementById('rv-main-title').textContent='내 평가 현황';
   document.getElementById('rv-main-sub').textContent=currentUser.name+' 님의 평가 요약';
-  const myIds = filteredCands.map(c=>c.id);
+  const myIds = filteredCands.map(c=>c.uid);
   const submitted = myIds.filter(id=>evalData[getEvalKey(currentUser.id,id)]?.finalSubmitted);
   const drafted = myIds.filter(id=>{const ev=evalData[getEvalKey(currentUser.id,id)];return ev?.drafted&&!ev?.finalSubmitted;});
   const grades={S:0,A:0,'B+':0,B:0,C:0};
@@ -934,7 +966,7 @@ function renderRvDashboard() {
 ═══════════════════════════════════════ */
 function renderEvalForm() {
   if (!selectedCandId || !currentUser) return;
-  const c = CANDIDATES.find(x=>x.id===selectedCandId);
+  const c = CANDIDATES.find(x=>x.uid===selectedCandId);
   if (!c) return;
   const ev = getEval(currentUser.id, selectedCandId);
   const total = calcTotal(ev);
@@ -1121,7 +1153,7 @@ function draftEval() {
   autoSave();
   ev.drafted = true; ev.draftedAt = new Date().toISOString();
   saveToLS(); renderCandList(); updateRvProgress();
-  const c = CANDIDATES.find(x=>x.id===selectedCandId);
+  const c = CANDIDATES.find(x=>x.uid===selectedCandId);
   if (c) pushToSheets(c, ev, false);
   showToast('💾 ' + (c?.name||'') + ' 임시저장 완료');
   renderEvalForm();
@@ -1135,7 +1167,7 @@ function submitEval() {
   if(g) ev.good=g.value; if(im) ev.improve=im.value;
   ev.drafted=true; ev.finalSubmitted=true; ev.submitted=true;
   ev.submittedAt = new Date().toISOString();
-  const c = CANDIDATES.find(x=>x.id===selectedCandId);
+  const c = CANDIDATES.find(x=>x.uid===selectedCandId);
   const total=calcTotal(ev), grade=getGrade(total);
   const myGroup=Object.values(GROUPS).find(g=>g.active!==false&&g.reviewers.includes(currentUser.id));
   const groupName=myGroup?myGroup.name:'미지정';
@@ -1148,7 +1180,7 @@ function submitEval() {
 /* 최종제출 확인 */
 function confirmFinalSubmit() {
   if (!selectedCandId || !currentUser) return;
-  const c=CANDIDATES.find(x=>x.id===selectedCandId);
+  const c=CANDIDATES.find(x=>x.uid===selectedCandId);
   const ev=getEval(currentUser.id,selectedCandId);
   if (ev.finalSubmitted) { showToast('이미 최종 제출된 평가입니다'); return; }
   const total=calcTotal(ev);
@@ -1158,17 +1190,17 @@ function confirmFinalSubmit() {
 /* 전체 일괄 최종제출 */
 function confirmFinalSubmitAll() {
   if (!currentUser) return;
-  const pending = filteredCands.filter(c=>{const ev=evalData[getEvalKey(currentUser.id,c.id)];return ev?.drafted&&!ev?.finalSubmitted;});
+  const pending = filteredCands.filter(c=>{const ev=evalData[getEvalKey(currentUser.id,c.uid)];return ev?.drafted&&!ev?.finalSubmitted;});
   if (!pending.length) { showToast('임시저장된 평가가 없습니다'); return; }
   const names = pending.map(c=>c.name).join(', ');
   if (!confirm(`【전체 최종 제출 확인】\n\n${pending.length}명의 평가를 최종 제출합니다:\n${names}\n\n최종 제출 후에는 수정할 수 없습니다.\n제출하시겠습니까?`)) return;
   const myGroup=Object.values(GROUPS).find(g=>g.active!==false&&g.reviewers.includes(currentUser.id));
   const groupName=myGroup?myGroup.name:'미지정';
   pending.forEach(c => {
-    const ev=getEval(currentUser.id,c.id);
+    const ev=getEval(currentUser.id,c.uid);
     const total=calcTotal(ev), grade=getGrade(total);
     ev.drafted=true; ev.finalSubmitted=true; ev.submitted=true; ev.submittedAt=new Date().toISOString();
-    evalHistory[`${groupName}||${c.id}||${currentUser.id}`]={submitted:true,submittedAt:ev.submittedAt,total,grade,scores:{...ev.scores},good:ev.good||'',improve:ev.improve||''};
+    evalHistory[`${c.uid}||${currentUser.id}`]={submitted:true,submittedAt:ev.submittedAt,total,grade,scores:{...ev.scores},good:ev.good||'',improve:ev.improve||''};
     pushToSheets(c, ev, true);
   });
   saveToLS(); renderCandList(); updateRvProgress();
@@ -1190,10 +1222,10 @@ function adminGo(view) {
 function renderAdminDashboard() {
   const gradeColors={S:'#1a6b3a',A:'#1a4f6b','B+':'#4a3a8c',B:'#7a5c10',C:'#8c3a2a'};
   const allEvals=[];
-  CANDIDATES.forEach(c=>{Object.keys(REVIEWERS).forEach(rvId=>{const k=getEvalKey(rvId,c.id);if(evalData[k]?.finalSubmitted)allEvals.push({cand:c,ev:evalData[k],rvId});});});
+  CANDIDATES.forEach(c=>{Object.keys(REVIEWERS).forEach(rvId=>{const k=getEvalKey(rvId,c.uid);if(evalData[k]?.finalSubmitted)allEvals.push({cand:c,ev:evalData[k],rvId});});});
   const totalCands=CANDIDATES.length;
-  const submittedCands=new Set(allEvals.map(e=>e.cand.id)).size;
-  const draftedCands=CANDIDATES.filter(c=>{const evs=Object.keys(REVIEWERS).map(rvId=>evalData[getEvalKey(rvId,c.id)]);return evs.some(e=>e?.drafted&&!e?.finalSubmitted);}).length;
+  const submittedCands=new Set(allEvals.map(e=>e.cand.uid)).size;
+  const draftedCands=CANDIDATES.filter(c=>{const evs=Object.keys(REVIEWERS).map(rvId=>evalData[getEvalKey(rvId,c.uid)]);return evs.some(e=>e?.drafted&&!e?.finalSubmitted);}).length;
   const grades={S:0,A:0,'B+':0,B:0,C:0};
   allEvals.forEach(e=>grades[getGrade(calcTotal(e.ev))]++);
 
