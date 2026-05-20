@@ -407,8 +407,8 @@ body { font-family:'Noto Sans KR',sans-serif; background:var(--bg); color:var(--
         </div>
       </div>
       <div class="sb-tabs">
-        <button class="sb-tab on" onclick="rvTab('eval')">📋 평가</button>
-        <button class="sb-tab" onclick="rvTab('dash')">📊 현황</button>
+        <button class="sb-tab on" onclick="rvTab('eval')">📋 평가 · Eval</button>
+        <button class="sb-tab" onclick="rvTab('dash')">📊 현황 · Status</button>
       </div>
       <div class="search-wrap" id="rv-search-wrap">
         <input class="sidebar-search" placeholder="🔍 이름 검색" oninput="filterCands(this.value)">
@@ -872,7 +872,7 @@ function renderCandList() {
     const grade = hasScore ? getGrade(total) : null;
     const on = selectedCandId === c.uid;
     const statusClass = ev.finalSubmitted ? 'badge-done' : ev.drafted ? 'badge-draft' : 'badge-todo';
-    const statusLabel = ev.finalSubmitted ? '✓ 완료(최종제출)' : ev.drafted ? '💾 완료(임시저장)' : '미완료';
+    const statusLabel = ev.finalSubmitted ? '✓ 완료(최종제출) · Submitted' : ev.drafted ? '💾 완료(임시저장) · Saved' : '미완료 · Pending';
     return `<div class="cand-item${on?' active':''}" onclick="selectCand('${c.uid}')">
       <div class="cand-item-name">${c.name}</div>
       <div class="cand-item-sub">${c.ojt1||''}${c.ojt2?' → '+c.ojt2:''}</div>
@@ -900,10 +900,10 @@ function updateSidebarFinalBtn() {
   btn.onclick = confirmFinalSubmitAll;
   if (allDone && myIds.length > 0) {
     btn.style.display='block'; btn.style.background='var(--green)'; btn.style.cursor='default';
-    btn.textContent='✅ 전체 제출 완료'; btn.onclick=null;
+    btn.textContent='✅ 전체 제출 완료 · All Submitted'; btn.onclick=null;
   } else if (pending.length > 0) {
     btn.style.display='block'; btn.style.background='var(--dw-orange)';
-    btn.textContent=`✅ 최종 제출 (${pending.length}명)`;
+    btn.textContent=`✅ 최종 제출 (${pending.length}명) · Final Submit`;
   } else {
     btn.style.display='none';
   }
@@ -1184,7 +1184,7 @@ function confirmFinalSubmit() {
   const ev=getEval(currentUser.id,selectedCandId);
   if (ev.finalSubmitted) { showToast('이미 최종 제출된 평가입니다'); return; }
   const total=calcTotal(ev);
-  if (confirm(`【최종 제출 확인】\n\n평가 대상: ${c.name} 님\n총점: ${total}점 (${getGrade(total)})\n\n최종 제출 후에는 수정할 수 없으며\nGoogle Sheets에 즉시 반영됩니다.\n\n제출하시겠습니까?`)) submitEval();
+  if (confirm(`【최종 제출 확인 · Final Submit Confirmation】\n\n평가 대상 · Evaluee: ${c.name}\n총점 · Total Score: ${total}점 (${getGrade(total)})\n\n최종 제출 후에는 수정할 수 없으며 Google Sheets에 즉시 반영됩니다.\nOnce submitted, it cannot be modified and will be reflected in Google Sheets immediately.\n\n제출하시겠습니까? · Do you want to submit?`)) submitEval();
 }
 
 /* 전체 일괄 최종제출 */
@@ -1193,7 +1193,7 @@ function confirmFinalSubmitAll() {
   const pending = filteredCands.filter(c=>{const ev=evalData[getEvalKey(currentUser.id,c.uid)];return ev?.drafted&&!ev?.finalSubmitted;});
   if (!pending.length) { showToast('임시저장된 평가가 없습니다'); return; }
   const names = pending.map(c=>c.name).join(', ');
-  if (!confirm(`【전체 최종 제출 확인】\n\n${pending.length}명의 평가를 최종 제출합니다:\n${names}\n\n최종 제출 후에는 수정할 수 없습니다.\n제출하시겠습니까?`)) return;
+  if (!confirm(`【전체 최종 제출 확인 · Bulk Final Submit Confirmation】\n\n${pending.length}명의 평가를 최종 제출합니다 · Submitting evaluations for ${pending.length} evaluee(s):\n${names}\n\n최종 제출 후에는 수정할 수 없습니다.\nOnce submitted, it cannot be modified.\n\n제출하시겠습니까? · Do you want to submit?`)) return;
   const myGroup=Object.values(GROUPS).find(g=>g.active!==false&&g.reviewers.includes(currentUser.id));
   const groupName=myGroup?myGroup.name:'미지정';
   pending.forEach(c => {
@@ -1380,7 +1380,7 @@ function renderCandTableRows(q){
       <td><span class="dept-tag">${c.ojt1||'-'}</span></td><td><span class="dept-tag">${c.ojt2||'-'}</span></td>
       <td style="font-size:12px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.project||'-'}</td>
       <td>${grp?`<span style="padding:2px 8px;background:rgba(0,0,0,0.05);border:1px solid var(--border);font-size:11px;font-weight:600;border-radius:2px">${grp}</span>`:'<span style="color:var(--text4)">미배정</span>'}</td>
-      <td><span class="badge-status ${sub?'badge-done':'badge-todo'}">${sub?'완료':'미완료'}</span></td>
+      <td><span class="badge-status ${sub?'badge-done':'badge-todo'}">${sub?'완료 · Done':'미완료 · Pending'}</span></td>
       <td onclick="event.stopPropagation()">
         <div style="display:flex;gap:4px">
           <button onclick="editCand('${c.id}')" style="padding:4px 10px;background:var(--surface2);border:1px solid var(--border);font-size:11px;cursor:pointer;font-family:inherit;border-radius:2px">수정</button>
